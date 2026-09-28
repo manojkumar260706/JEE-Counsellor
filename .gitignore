@@ -35,3 +35,15 @@ build/
 ### Application Config / Secrets ###
 *.yml
 *.yaml
+
+### Compiled Class Files & Build Outputs ###
+*.class
+target/
+target_*/
+
+### Log files ###
+*.log
+
+### OS generated files ###
+.DS_Store
+Thumbs.db
