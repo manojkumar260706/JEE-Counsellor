@@ -1,0 +1,13 @@
+spring:
+  application:
+    name: jee-predictor
+
+  datasource:
+    url: "jdbc:postgresql://ep-red-sun-az9sxlb3-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb?user=neondb_owner&password=npg_0eYA8FTnVbhZ&sslmode=require&channelBinding=require"
+  
+  jpa:
+    hibernate:
+      ddl-auto: update
+      show-sql: true
+
+  jackson:

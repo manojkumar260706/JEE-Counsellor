@@ -35,6 +35,16 @@ build/
 ### Application Config / Secrets ###
 *.yml
 *.yaml
+!src/main/resources/application*.yml
+!src/main/resources/application*.yaml
+!docker-compose.yml
+!docker-compose.yaml
+application-local.yml
+application-local.yaml
+*.local.yml
+*.local.yaml
+.env
+.env.local
 
 ### Compiled Class Files & Build Outputs ###
 *.class
