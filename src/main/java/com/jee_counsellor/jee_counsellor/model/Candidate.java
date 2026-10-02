@@ -30,11 +30,9 @@ public class Candidate {
     @Column(name = "advance_rank", nullable = false, unique = true)
     private Integer advanceRank;
 
-    @Enumerated(EnumType.STRING)
     @Column(name = "gender", nullable = false)
     private Gender gender;
 
-    @Enumerated(EnumType.STRING)
     @Column(name = "seat_type", nullable = false)
     private SeatType seatType;
 
