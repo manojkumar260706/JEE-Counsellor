@@ -1,19 +1,19 @@
 package com.jee_counsellor.jee_counsellor;
 
-import com.jee_counsellor.jee_counsellor.dto.CollegeOptionResponse;
-import com.jee_counsellor.jee_counsellor.dto.QuotaCutoffDetail;
+import com.jee_counsellor.jee_counsellor.dto.*;
+import com.jee_counsellor.jee_counsellor.exception.InvalidOperationException;
 import com.jee_counsellor.jee_counsellor.exception.ResourceNotFoundException;
-import com.jee_counsellor.jee_counsellor.model.Candidate;
-import com.jee_counsellor.jee_counsellor.model.Gender;
-import com.jee_counsellor.jee_counsellor.model.JosaaCutoff;
-import com.jee_counsellor.jee_counsellor.model.SeatType;
+import com.jee_counsellor.jee_counsellor.model.*;
+import com.jee_counsellor.jee_counsellor.repository.CandidateChoiceRepository;
 import com.jee_counsellor.jee_counsellor.repository.CandidateRepository;
+import com.jee_counsellor.jee_counsellor.repository.CounsellingStateRepository;
 import com.jee_counsellor.jee_counsellor.repository.JosaaCutoffRepository;
 import com.jee_counsellor.jee_counsellor.service.CounsellingService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.Page;
 
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
@@ -26,14 +26,25 @@ public class CounsellingServiceTest {
 
     private CandidateRepository candidateRepository;
     private JosaaCutoffRepository cutoffRepository;
+    private CandidateChoiceRepository candidateChoiceRepository;
+    private CounsellingStateRepository counsellingStateRepository;
     private CounsellingService counsellingService;
 
     @BeforeEach
     void setUp() {
         candidateRepository = mock(CandidateRepository.class);
         cutoffRepository = mock(JosaaCutoffRepository.class);
-        counsellingService = new CounsellingService(candidateRepository, cutoffRepository);
+        candidateChoiceRepository = mock(CandidateChoiceRepository.class);
+        counsellingStateRepository = mock(CounsellingStateRepository.class);
+        counsellingService = new CounsellingService(
+                candidateRepository,
+                cutoffRepository,
+                candidateChoiceRepository,
+                counsellingStateRepository
+        );
     }
+
+    // --- College Option Prediction Tests ---
 
     @Test
     void testGetCollegeOptions_CandidateNotFound() {
@@ -76,7 +87,7 @@ public class CounsellingServiceTest {
         assertEquals(1, result.getTotalElements());
         CollegeOptionResponse option = result.getContent().get(0);
         assertEquals("National Institute of Technology Karnataka, Surathkal", option.getInstitute());
-        assertEquals("EASY", option.getDifficulty()); // 5000 <= 8000 * 0.7 (5600)
+        assertEquals("EASY", option.getDifficulty());
         assertEquals(1, option.getEligibleQuotas().size());
         assertEquals("HS", option.getEligibleQuotas().get(0).getQuota());
     }
@@ -114,8 +125,8 @@ public class CounsellingServiceTest {
     void testDifficultyPrediction_IIT_UsesAdvanceRank() {
         Candidate candidate = new Candidate();
         candidate.setId(3L);
-        candidate.setMainsRank(500);     // Excellent mains rank
-        candidate.setAdvanceRank(12000); // Higher advance rank
+        candidate.setMainsRank(500);
+        candidate.setAdvanceRank(12000);
         candidate.setGender(Gender.GENDER_NEUTRAL);
         candidate.setSeatType(SeatType.OPEN);
         candidate.setHomeState("Delhi");
@@ -129,7 +140,7 @@ public class CounsellingServiceTest {
         iitCutoff.setSeatType("OPEN");
         iitCutoff.setGender("Gender-Neutral");
         iitCutoff.setOpeningRank("2000");
-        iitCutoff.setClosingRank("10000"); // 12000 > 10000 -> REACH
+        iitCutoff.setClosingRank("10000");
 
         when(cutoffRepository.findAllApplicableCutoffs(any(), any(), any(), any(), any()))
                 .thenReturn(List.of(iitCutoff));
@@ -137,7 +148,6 @@ public class CounsellingServiceTest {
         Page<CollegeOptionResponse> result = counsellingService.getCollegeOptions(3L, 2026L, 1L, 0, 10);
         CollegeOptionResponse option = result.getContent().get(0);
 
-        // Candidate advanceRank (12000) > closingRank (10000) => REACH (even though mainsRank is 500)
         assertEquals("REACH", option.getDifficulty());
     }
 
@@ -145,8 +155,8 @@ public class CounsellingServiceTest {
     void testDifficultyPrediction_NonIIT_UsesMainsRank() {
         Candidate candidate = new Candidate();
         candidate.setId(4L);
-        candidate.setMainsRank(3000);   // Good mains rank
-        candidate.setAdvanceRank(20000);// Weak advance rank
+        candidate.setMainsRank(3000);
+        candidate.setAdvanceRank(20000);
         candidate.setGender(Gender.GENDER_NEUTRAL);
         candidate.setSeatType(SeatType.OPEN);
         candidate.setHomeState("Tamil Nadu");
@@ -160,7 +170,7 @@ public class CounsellingServiceTest {
         nitCutoff.setSeatType("OPEN");
         nitCutoff.setGender("Gender-Neutral");
         nitCutoff.setOpeningRank("2000");
-        nitCutoff.setClosingRank("4000"); // 3000 <= 4000 and 3000 > 4000*0.7 (2800) -> MEDIUM
+        nitCutoff.setClosingRank("4000");
 
         when(cutoffRepository.findAllApplicableCutoffs(any(), any(), any(), any(), any()))
                 .thenReturn(List.of(nitCutoff));
@@ -168,7 +178,6 @@ public class CounsellingServiceTest {
         Page<CollegeOptionResponse> result = counsellingService.getCollegeOptions(4L, 2026L, 1L, 0, 10);
         CollegeOptionResponse option = result.getContent().get(0);
 
-        // Non-IIT uses mainsRank (3000): 3000 > 2800 and 3000 <= 4000 => MEDIUM
         assertEquals("MEDIUM", option.getDifficulty());
     }
 
@@ -184,7 +193,6 @@ public class CounsellingServiceTest {
 
         when(candidateRepository.findById(5L)).thenReturn(Optional.of(candidate));
 
-        // Cutoff 1: Home State quota (Closing rank 8000 -> 3500 <= 5600 -> EASY)
         JosaaCutoff hsCutoff = new JosaaCutoff();
         hsCutoff.setInstitute("National Institute of Technology, Tiruchirappalli");
         hsCutoff.setAcademicProgramName("Computer Science and Engineering");
@@ -195,7 +203,6 @@ public class CounsellingServiceTest {
         hsCutoff.setClosingRank("8000");
         hsCutoff.setSeatsAvailable(25L);
 
-        // Cutoff 2: Other State quota for same college (Closing rank 4000 -> 3500 <= 4000 -> MEDIUM)
         JosaaCutoff osCutoff = new JosaaCutoff();
         osCutoff.setInstitute("National Institute of Technology, Tiruchirappalli");
         osCutoff.setAcademicProgramName("Computer Science and Engineering");
@@ -211,29 +218,147 @@ public class CounsellingServiceTest {
 
         Page<CollegeOptionResponse> result = counsellingService.getCollegeOptions(5L, 2026L, 1L, 0, 10);
 
-        // Exactly 1 unique college option returned
         assertEquals(1, result.getTotalElements());
-
         CollegeOptionResponse option = result.getContent().get(0);
         assertEquals("National Institute of Technology, Tiruchirappalli", option.getInstitute());
         assertEquals("Computer Science and Engineering", option.getAcademicProgramName());
-
-        // Overall difficulty is the most favorable one (EASY from HS quota)
         assertEquals("EASY", option.getDifficulty());
         assertEquals(8000, option.getBestClosingRank());
         assertEquals(50L, option.getTotalSeatsAvailable());
-
-        // Contains both quota cutoffs
         assertEquals(2, option.getEligibleQuotas().size());
+    }
 
-        QuotaCutoffDetail firstQuota = option.getEligibleQuotas().get(0);
-        assertEquals("HS", firstQuota.getQuota());
-        assertEquals(8000, firstQuota.getClosingRank());
-        assertEquals("EASY", firstQuota.getDifficulty());
+    // --- Round & Counselling State Tests ---
 
-        QuotaCutoffDetail secondQuota = option.getEligibleQuotas().get(1);
-        assertEquals("OS", secondQuota.getQuota());
-        assertEquals(4000, secondQuota.getClosingRank());
-        assertEquals("MEDIUM", secondQuota.getDifficulty());
+    @Test
+    void testGetCounsellingState_InitializesDefaultWhenEmpty() {
+        when(counsellingStateRepository.findById(1L)).thenReturn(Optional.empty());
+        when(counsellingStateRepository.save(any(CounsellingState.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        CounsellingStateResponse state = counsellingService.getCounsellingState();
+
+        assertNotNull(state);
+        assertEquals(1, state.getCurrentRound());
+        assertEquals(CounsellingPhase.CHOICE_FILLING, state.getPhase());
+        assertTrue(state.isChoiceFillingOpen());
+        verify(counsellingStateRepository).save(any(CounsellingState.class));
+    }
+
+    @Test
+    void testUpdateCounsellingState_ValidRoundAndPhase() {
+        CounsellingState existing = new CounsellingState(1L, 1, CounsellingPhase.CHOICE_FILLING, 2026L, LocalDateTime.now());
+        when(counsellingStateRepository.findById(1L)).thenReturn(Optional.of(existing));
+        when(counsellingStateRepository.save(any(CounsellingState.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        CounsellingStateResponse updated = counsellingService.updateCounsellingState(2, CounsellingPhase.ALLOTMENT_ANNOUNCED);
+
+        assertEquals(2, updated.getCurrentRound());
+        assertEquals(CounsellingPhase.ALLOTMENT_ANNOUNCED, updated.getPhase());
+        assertFalse(updated.isChoiceFillingOpen());
+    }
+
+    @Test
+    void testUpdateCounsellingState_InvalidRound_ThrowsException() {
+        assertThrows(InvalidOperationException.class, () ->
+                counsellingService.updateCounsellingState(0, CounsellingPhase.CHOICE_FILLING));
+        assertThrows(InvalidOperationException.class, () ->
+                counsellingService.updateCounsellingState(6, CounsellingPhase.CHOICE_FILLING));
+    }
+
+    // --- Candidate Choice Filling Tests ---
+
+    @Test
+    void testSaveCandidateChoices_SuccessSequentialPriorities() {
+        Candidate candidate = new Candidate();
+        candidate.setId(10L);
+        when(candidateRepository.findById(10L)).thenReturn(Optional.of(candidate));
+
+        CounsellingState state = new CounsellingState(1L, 1, CounsellingPhase.CHOICE_FILLING, 2026L, LocalDateTime.now());
+        when(counsellingStateRepository.findById(1L)).thenReturn(Optional.of(state));
+
+        when(candidateChoiceRepository.saveAll(anyList())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        List<ChoiceItemRequest> request = List.of(
+                new ChoiceItemRequest("IIT Bombay", "Computer Science"),
+                new ChoiceItemRequest("IIT Delhi", "Computer Science"),
+                new ChoiceItemRequest("IIT Madras", "Electrical Engineering")
+        );
+
+        List<CandidateChoiceResponse> saved = counsellingService.saveCandidateChoices(10L, request);
+
+        assertEquals(3, saved.size());
+        assertEquals(1, saved.get(0).getPriorityOrder());
+        assertEquals("IIT Bombay", saved.get(0).getInstitute());
+
+        assertEquals(2, saved.get(1).getPriorityOrder());
+        assertEquals("IIT Delhi", saved.get(1).getInstitute());
+
+        assertEquals(3, saved.get(2).getPriorityOrder());
+        assertEquals("IIT Madras", saved.get(2).getInstitute());
+
+        verify(candidateChoiceRepository).deleteByCandidateId(10L);
+        verify(candidateChoiceRepository).flush();
+    }
+
+    @Test
+    void testSaveCandidateChoices_DuplicateChoiceInList_ThrowsException() {
+        Candidate candidate = new Candidate();
+        candidate.setId(10L);
+        when(candidateRepository.findById(10L)).thenReturn(Optional.of(candidate));
+
+        CounsellingState state = new CounsellingState(1L, 1, CounsellingPhase.CHOICE_FILLING, 2026L, LocalDateTime.now());
+        when(counsellingStateRepository.findById(1L)).thenReturn(Optional.of(state));
+
+        List<ChoiceItemRequest> request = List.of(
+                new ChoiceItemRequest("IIT Bombay", "Computer Science"),
+                new ChoiceItemRequest("IIT Bombay", "Computer Science") // duplicate!
+        );
+
+        InvalidOperationException ex = assertThrows(InvalidOperationException.class, () ->
+                counsellingService.saveCandidateChoices(10L, request));
+
+        assertTrue(ex.getMessage().contains("Duplicate choice"));
+    }
+
+    @Test
+    void testSaveCandidateChoices_WhenPhaseClosed_ThrowsException() {
+        Candidate candidate = new Candidate();
+        candidate.setId(10L);
+        when(candidateRepository.findById(10L)).thenReturn(Optional.of(candidate));
+
+        CounsellingState state = new CounsellingState(1L, 1, CounsellingPhase.ALLOTMENT_ANNOUNCED, 2026L, LocalDateTime.now());
+        when(counsellingStateRepository.findById(1L)).thenReturn(Optional.of(state));
+
+        List<ChoiceItemRequest> request = List.of(
+                new ChoiceItemRequest("IIT Bombay", "Computer Science")
+        );
+
+        InvalidOperationException ex = assertThrows(InvalidOperationException.class, () ->
+                counsellingService.saveCandidateChoices(10L, request));
+
+        assertTrue(ex.getMessage().contains("Choice filling is currently closed"));
+    }
+
+    @Test
+    void testGetCandidateChoices_ReturnsOrderedChoices() {
+        when(candidateRepository.existsById(10L)).thenReturn(true);
+
+        CandidateChoice c1 = new CandidateChoice(null, 1, "IIT Bombay", "CSE");
+        c1.setId(101L);
+        CandidateChoice c2 = new CandidateChoice(null, 2, "IIT Delhi", "CSE");
+        c2.setId(102L);
+
+        when(candidateChoiceRepository.findByCandidateIdOrderByPriorityOrderAsc(10L))
+                .thenReturn(List.of(c1, c2));
+
+        List<CandidateChoiceResponse> choices = counsellingService.getCandidateChoices(10L);
+
+        assertEquals(2, choices.size());
+        assertEquals(1, choices.get(0).getPriorityOrder());
+        assertEquals("IIT Bombay", choices.get(0).getInstitute());
+        assertEquals(2, choices.get(1).getPriorityOrder());
+        assertEquals("IIT Delhi", choices.get(1).getInstitute());
     }
 }

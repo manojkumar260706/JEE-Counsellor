@@ -3,12 +3,16 @@ spring:
     name: jee-predictor
 
   datasource:
-    url: "jdbc:postgresql://ep-red-sun-az9sxlb3-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb?user=neondb_owner&password=npg_0eYA8FTnVbhZ&sslmode=require&channelBinding=require"
-  
+    url: "jdbc:postgresql://ep-red-sun-az9sxlb3-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb?user=neondb_owner&password=npg_0eYA8FTnVbhZ&sslmode=require&channelBinding=require&prepareThreshold=0"
+    hikari:
+      maximum-pool-size: 5
+      connection-timeout: 20000
+
   jpa:
     hibernate:
       ddl-auto: update
-      show-sql: true
+    show-sql: true
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
 
   jackson:
     deserialization:

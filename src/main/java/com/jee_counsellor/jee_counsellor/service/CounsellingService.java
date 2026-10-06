@@ -1,18 +1,21 @@
 package com.jee_counsellor.jee_counsellor.service;
 
-import com.jee_counsellor.jee_counsellor.dto.CollegeOptionResponse;
-import com.jee_counsellor.jee_counsellor.dto.QuotaCutoffDetail;
+import com.jee_counsellor.jee_counsellor.dto.*;
+import com.jee_counsellor.jee_counsellor.exception.InvalidOperationException;
 import com.jee_counsellor.jee_counsellor.exception.ResourceNotFoundException;
-import com.jee_counsellor.jee_counsellor.model.Candidate;
-import com.jee_counsellor.jee_counsellor.model.Gender;
-import com.jee_counsellor.jee_counsellor.model.JosaaCutoff;
+import com.jee_counsellor.jee_counsellor.model.*;
+import com.jee_counsellor.jee_counsellor.repository.CandidateChoiceRepository;
 import com.jee_counsellor.jee_counsellor.repository.CandidateRepository;
+import com.jee_counsellor.jee_counsellor.repository.CounsellingStateRepository;
 import com.jee_counsellor.jee_counsellor.repository.JosaaCutoffRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -23,24 +26,132 @@ public class CounsellingService {
 
     private final CandidateRepository candidateRepository;
     private final JosaaCutoffRepository cutoffRepository;
+    private final CandidateChoiceRepository candidateChoiceRepository;
+    private final CounsellingStateRepository counsellingStateRepository;
 
+    @Autowired
     public CounsellingService(CandidateRepository candidateRepository,
-                              JosaaCutoffRepository cutoffRepository) {
+                              JosaaCutoffRepository cutoffRepository,
+                              CandidateChoiceRepository candidateChoiceRepository,
+                              CounsellingStateRepository counsellingStateRepository) {
         this.candidateRepository = candidateRepository;
         this.cutoffRepository = cutoffRepository;
+        this.candidateChoiceRepository = candidateChoiceRepository;
+        this.counsellingStateRepository = counsellingStateRepository;
+    }
+
+    /**
+     * Retrieves the current counselling state (round and phase).
+     * If no state exists in database, initializes default state (Round 1, CHOICE_FILLING).
+     */
+    @Transactional
+    public CounsellingStateResponse getCounsellingState() {
+        CounsellingState state = getOrCreateCounsellingStateEntity();
+        return CounsellingStateResponse.fromEntity(state);
+    }
+
+    /**
+     * Updates the current counselling round (1-5) and phase.
+     */
+    @Transactional
+    public CounsellingStateResponse updateCounsellingState(Integer round, CounsellingPhase phase) {
+        if (round == null || round < 1 || round > 5) {
+            throw new InvalidOperationException("Round must be between 1 and 5.");
+        }
+        if (phase == null) {
+            throw new InvalidOperationException("Phase cannot be null.");
+        }
+
+        CounsellingState state = getOrCreateCounsellingStateEntity();
+        state.setCurrentRound(round);
+        state.setPhase(phase);
+        state.setUpdatedAt(LocalDateTime.now());
+        CounsellingState saved = counsellingStateRepository.save(state);
+        return CounsellingStateResponse.fromEntity(saved);
+    }
+
+    /**
+     * Returns candidate's saved choices in ascending priority order (1 = highest priority).
+     */
+    @Transactional(readOnly = true)
+    public List<CandidateChoiceResponse> getCandidateChoices(Long candidateId) {
+        validateCandidateExists(candidateId);
+        List<CandidateChoice> choices = candidateChoiceRepository.findByCandidateIdOrderByPriorityOrderAsc(candidateId);
+        return choices.stream().map(CandidateChoiceResponse::fromEntity).toList();
+    }
+
+    /**
+     * Saves / replaces the candidate's entire choice list in bulk.
+     * Priorities are automatically assigned sequentially (1, 2, 3... N) based on list order.
+     */
+    @Transactional
+    public List<CandidateChoiceResponse> saveCandidateChoices(Long candidateId, List<ChoiceItemRequest> choiceRequests) {
+        Candidate candidate = candidateRepository.findById(candidateId)
+                .orElseThrow(() -> new ResourceNotFoundException("Candidate with ID " + candidateId + " not found."));
+
+        CounsellingState state = getOrCreateCounsellingStateEntity();
+        if (state.getPhase() != CounsellingPhase.CHOICE_FILLING) {
+            throw new InvalidOperationException("Choice filling is currently closed. Current phase: " + state.getPhase().getDisplayName());
+        }
+
+        if (choiceRequests == null || choiceRequests.isEmpty()) {
+            throw new InvalidOperationException("Choices list cannot be empty.");
+        }
+
+        // Validate duplicates within the submitted list
+        Set<String> seenOptions = new HashSet<>();
+        for (int i = 0; i < choiceRequests.size(); i++) {
+            ChoiceItemRequest item = choiceRequests.get(i);
+            if (item.getInstitute() == null || item.getInstitute().isBlank()) {
+                throw new InvalidOperationException("Choice at position " + (i + 1) + " must specify an institute.");
+            }
+            if (item.getAcademicProgramName() == null || item.getAcademicProgramName().isBlank()) {
+                throw new InvalidOperationException("Choice at position " + (i + 1) + " must specify an academic program.");
+            }
+
+            String key = item.getInstitute().strip().toLowerCase() + "|||" + item.getAcademicProgramName().strip().toLowerCase();
+            if (!seenOptions.add(key)) {
+                throw new InvalidOperationException("Duplicate choice detected in preference list: "
+                        + item.getInstitute() + " - " + item.getAcademicProgramName());
+            }
+        }
+
+        // Replace existing choices atomically
+        candidateChoiceRepository.deleteByCandidateId(candidateId);
+        candidateChoiceRepository.flush();
+
+        List<CandidateChoice> newChoices = new ArrayList<>();
+        for (int i = 0; i < choiceRequests.size(); i++) {
+            ChoiceItemRequest req = choiceRequests.get(i);
+            newChoices.add(new CandidateChoice(
+                    candidate,
+                    i + 1, // 1-based sequential priority
+                    req.getInstitute().strip(),
+                    req.getAcademicProgramName().strip()
+            ));
+        }
+
+        List<CandidateChoice> saved = candidateChoiceRepository.saveAll(newChoices);
+        return saved.stream().map(CandidateChoiceResponse::fromEntity).toList();
+    }
+
+    private CounsellingState getOrCreateCounsellingStateEntity() {
+        return counsellingStateRepository.findById(1L).orElseGet(() -> {
+            CounsellingState defaultState = new CounsellingState(1L, 1, CounsellingPhase.CHOICE_FILLING, 2026L, LocalDateTime.now());
+            return counsellingStateRepository.save(defaultState);
+        });
+    }
+
+    private void validateCandidateExists(Long candidateId) {
+        if (!candidateRepository.existsById(candidateId)) {
+            throw new ResourceNotFoundException("Candidate with ID " + candidateId + " not found.");
+        }
     }
 
     /**
      * Returns a paginated list of consolidated college options for the given candidate.
      * Each unique (Institute + Academic Program) is returned only once, with all matching
      * quota cutoffs attached, and an overall predicted difficulty level.
-     *
-     * @param candidateId the ID of the logged-in candidate
-     * @param year        cutoff year (default 2026)
-     * @param round       counselling round (default 1)
-     * @param page        zero-based page index
-     * @param size        page size
-     * @return paginated CollegeOptionResponse with consolidated quota details and difficulty predictions
      */
     public Page<CollegeOptionResponse> getCollegeOptions(Long candidateId, Long year, Long round,
                                                           int page, int size) {
@@ -48,15 +159,9 @@ public class CounsellingService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Candidate with ID " + candidateId + " not found."));
 
-        // Determine applicable genders based on candidate's gender
-        // Female candidates are eligible for both Gender-Neutral and Female-only seats
-        // Gender-Neutral (male) candidates are only eligible for Gender-Neutral seats
         List<String> applicableGenders = resolveApplicableGenders(candidate.getGender());
-
-        // Get candidate's seat type as stored in DB (display name format, e.g., "OBC-NCL")
         String seatType = candidate.getSeatType().getDisplayName();
 
-        // Fetch all matching cutoff rows from DB
         List<JosaaCutoff> cutoffs = cutoffRepository.findAllApplicableCutoffs(
                 year, round, seatType, applicableGenders, candidate.getHomeState());
 
@@ -64,8 +169,6 @@ public class CounsellingService {
             return Page.empty(PageRequest.of(page, size));
         }
 
-        // Group cutoffs by (Institute + Academic Program Name)
-        // LinkedHashMap preserves ranking order from SQL (sorted by closing rank ASC)
         Map<String, List<JosaaCutoff>> grouped = cutoffs.stream()
                 .collect(Collectors.groupingBy(
                         c -> (c.getInstitute() != null ? c.getInstitute() : "") + "|||"
@@ -74,13 +177,11 @@ public class CounsellingService {
                         Collectors.toList()
                 ));
 
-        // Transform each group into a consolidated CollegeOptionResponse
         List<CollegeOptionResponse> consolidatedOptions = new ArrayList<>();
         for (List<JosaaCutoff> groupList : grouped.values()) {
             consolidatedOptions.add(buildConsolidatedOption(groupList, candidate));
         }
 
-        // Apply pagination to consolidated list
         int totalElements = consolidatedOptions.size();
         int start = Math.min(page * size, totalElements);
         int end = Math.min(start + size, totalElements);
@@ -89,17 +190,11 @@ public class CounsellingService {
         return new PageImpl<>(pagedList, PageRequest.of(page, size), totalElements);
     }
 
-    /**
-     * Builds a consolidated CollegeOptionResponse from multiple cutoff rows
-     * representing different quotas/genders for the same institute and program.
-     */
     private CollegeOptionResponse buildConsolidatedOption(List<JosaaCutoff> cutoffs, Candidate candidate) {
         JosaaCutoff first = cutoffs.get(0);
         String institute = first.getInstitute();
         String programName = first.getAcademicProgramName();
 
-        // Determine which rank to use:
-        // IIT -> Advanced rank, everything else (NIT/IIIT/GFTI) -> Mains rank
         boolean isIIT = institute != null && institute.contains(IIT_IDENTIFIER);
         int candidateRank = isIIT ? candidate.getAdvanceRank() : candidate.getMainsRank();
 
@@ -127,14 +222,12 @@ public class CounsellingService {
                     cutoff.getSeatsAvailable()
             ));
 
-            // Track best closing rank (highest closing rank offers most favorable cutoff)
             if (clRank != null) {
                 if (bestClosingRank == null || clRank > bestClosingRank) {
                     bestClosingRank = clRank;
                 }
             }
 
-            // Combine difficulty: EASY > MEDIUM > REACH
             overallDifficulty = combineDifficulty(overallDifficulty, difficulty);
         }
 
@@ -148,10 +241,6 @@ public class CounsellingService {
         );
     }
 
-    /**
-     * Combines difficulty levels so the candidate sees their most favorable chance:
-     * EASY > MEDIUM > REACH
-     */
     private String combineDifficulty(String current, String next) {
         if (current == null) return next;
         if (next == null) return current;
@@ -160,12 +249,6 @@ public class CounsellingService {
         return "REACH";
     }
 
-    /**
-     * Resolves which gender values the candidate is eligible for.
-     * JoSAA rules:
-     * - Female candidates -> eligible for both "Gender-Neutral" and "Female-only" seats
-     * - Male/Gender-Neutral candidates -> eligible for "Gender-Neutral" seats only
-     */
     private List<String> resolveApplicableGenders(Gender candidateGender) {
         if (candidateGender == Gender.FEMALE_ONLY) {
             return List.of(
@@ -176,13 +259,6 @@ public class CounsellingService {
         return List.of(Gender.GENDER_NEUTRAL.getDisplayName());
     }
 
-    /**
-     * Computes difficulty prediction based on candidate rank vs closing rank.
-     *
-     * EASY   -> candidate rank <= 70% of closing rank (well within cutoff)
-     * MEDIUM -> candidate rank <= closing rank (within cutoff)
-     * REACH  -> candidate rank > closing rank (above cutoff, still worth trying)
-     */
     private String computeDifficulty(int candidateRank, Integer closingRank) {
         if (closingRank == null || closingRank == 0) {
             return null;
@@ -196,18 +272,12 @@ public class CounsellingService {
         }
     }
 
-    /**
-     * Safely parses a rank string from the cutoff table.
-     * Handles formats like "6859", "1173808.0".
-     * Returns null for unparseable values.
-     */
     private Integer parseRank(String rankStr) {
         if (rankStr == null || rankStr.isBlank()) {
             return null;
         }
         try {
             String cleaned = rankStr.strip();
-            // Handle "1173808.0" format -> strip trailing ".0"
             if (cleaned.endsWith(".0")) {
                 cleaned = cleaned.substring(0, cleaned.length() - 2);
             }
