@@ -35,8 +35,6 @@ build/
 ### Application Config / Secrets ###
 *.yml
 *.yaml
-!src/main/resources/application*.yml
-!src/main/resources/application*.yaml
 !docker-compose.yml
 !docker-compose.yaml
 application-local.yml
